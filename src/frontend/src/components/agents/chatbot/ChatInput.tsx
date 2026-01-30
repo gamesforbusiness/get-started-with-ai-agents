@@ -30,6 +30,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   return (
     <ChatInputFluent
       aria-label="Chat Input"
+      maxLength={20000}
       charactersRemainingMessage={(_value: number) => ``} // needed per fluentui-copilot API
       data-testid="chat-input"
       disableSend={isGenerating}
