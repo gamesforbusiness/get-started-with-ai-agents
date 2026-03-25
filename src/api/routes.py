@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 
 import logging
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from azure.ai.projects.models import AgentVersionDetails
+from azure.ai.projects.models import AgentVersionObject, AgentReference
 from openai.types.conversations.message import Message
 from openai.types.responses import ResponseOutputMessage
 from openai.types.conversations import Conversation
@@ -92,8 +92,8 @@ def cleanup_created_at_metadata(metadata: Mapping[str, str]) -> None:
 def get_project_client(request: Request) -> AIProjectClient:
     return request.app.state.ai_project
 
-def get_agent_version_details(request: Request) -> AgentVersionDetails:
-    return request.app.state.agent_version_details
+def get_agent_version_obj(request: Request) -> AgentVersionObject:
+    return request.app.state.agent_version_obj
 
 def get_openai_client(request: Request) -> AsyncOpenAI:
     return get_project_client(request).get_openai_client()
@@ -199,7 +199,7 @@ async def save_user_message_created_at(openai_client: AsyncOpenAI, conversation:
 
 
 async def get_result(
-    agent: AgentVersionDetails,
+    agent: AgentVersionObject,
     conversation: Conversation,
     user_message: str, 
     project_client: AIProjectClient,
@@ -210,24 +210,11 @@ async def get_result(
         async with project_client.get_openai_client() as openai_client:
             logger.info(f"get_result invoked for conversation={conversation.id}")
             input_created_at = datetime.now(timezone.utc).timestamp()
-
-            # MCP tool konfiguráció
-            mcp_tools = [
-                {
-                    "type": "mcp",
-                    "server_label": "kb",
-                    "server_url": "https://gamesforbusiness-ai-search.search.windows.net/knowledgebases/knowledgebase-1774432482353/mcp",
-                    "require_approval": "never",
-                }
-            ]
             try:
                 response = await openai_client.responses.create(
                     conversation=conversation.id,
                     input=user_message,
-                    extra_body={
-                        "agent_reference": {"name": agent.name, "type": "agent_reference"},
-                        "tools": mcp_tools,
-                    },
+                    extra_body={"agent": AgentReference(name=agent.name, version=agent.version).as_dict()},
                     stream=True
                 )
                 logger.info("Successfully created stream; starting to process events")
@@ -263,7 +250,7 @@ async def get_result(
 @router.get("/chat/history")
 async def history(
     request: Request,
-    agent: AgentVersionDetails = Depends(get_agent_version_details),
+    agent: AgentVersionObject = Depends(get_agent_version_obj),
     openai_client : AsyncOpenAI = Depends(get_openai_client),
 	_ = auth_dependency
 ):
@@ -302,7 +289,7 @@ async def history(
 
 @router.get("/agent")
 async def get_chat_agent(
-    agent: AgentVersionDetails = Depends(get_agent_version_details),
+    agent: AgentVersionObject = Depends(get_agent_version_obj),
 ):
     wsid = os.environ.get("AZURE_EXISTING_AIPROJECT_RESOURCE_ID")
     agent_id = os.environ.get("AZURE_EXISTING_AGENT_ID")
@@ -316,7 +303,7 @@ async def get_chat_agent(
 async def chat(
     request: Request,
     project_client: AIProjectClient = Depends(get_project_client),
-    agent: AgentVersionDetails = Depends(get_agent_version_details),
+    agent: AgentVersionObject = Depends(get_agent_version_obj),
     
 	_ = auth_dependency
 ):
