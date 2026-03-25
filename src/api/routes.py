@@ -225,12 +225,11 @@ async def get_result(
                     conversation=conversation.id,
                     input=user_message,
                     extra_body={
-                        "agent": AgentReference(
-                            name=agent.name,
-                            version=agent.version
-                        ).as_dict(),
-                        "tools": mcp_tools,
-                    },
+                            "agent_reference": {
+                                "name": agent.name,
+                                "type": "agent_reference",
+                            }
+                        },
                     stream=True
                 )
                 logger.info("Successfully created stream; starting to process events")
