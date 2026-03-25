@@ -210,11 +210,24 @@ async def get_result(
         async with project_client.get_openai_client() as openai_client:
             logger.info(f"get_result invoked for conversation={conversation.id}")
             input_created_at = datetime.now(timezone.utc).timestamp()
+
+            # MCP tool konfiguráció
+            mcp_tools = [
+                {
+                    "type": "mcp",
+                    "server_label": "kb",
+                    "server_url": "https://gamesforbusiness-ai-search.search.windows.net/knowledgebases/knowledgebase-1774432482353/mcp",
+                    "require_approval": "never",
+                }
+            ]
             try:
                 response = await openai_client.responses.create(
                     conversation=conversation.id,
                     input=user_message,
-                    extra_body={"agent_reference": {"name": agent.name, "type": "agent_reference"}},
+                    extra_body={
+                        "agent_reference": {"name": agent.name, "type": "agent_reference"},
+                        "tools": mcp_tools,
+                    },
                     stream=True
                 )
                 logger.info("Successfully created stream; starting to process events")
