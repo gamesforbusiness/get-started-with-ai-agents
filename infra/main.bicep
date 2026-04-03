@@ -129,6 +129,9 @@ param searchConnectionId string = ''
 @description('The name of the blob container for document storage')
 param blobContainerName string = 'documents'
 
+@description('Azure Document Intelligence endpoint')
+param documentIntelligenceEndpoint string = ''
+
 @description('Entra ID App Registration client ID for Easy Auth')
 param entraAuthClientId string = ''
 
@@ -325,6 +328,7 @@ module api 'api.bicep' = {
     entraAuthClientId: entraAuthClientId
     entraAuthTenantId: !empty(entraAuthTenantId) ? entraAuthTenantId : tenant().tenantId
     storageAccountName: ai!.outputs.storageAccountName
+    documentIntelligenceEndpoint: documentIntelligenceEndpoint
   }
 }
 

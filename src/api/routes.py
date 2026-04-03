@@ -64,13 +64,89 @@ password = os.getenv("WEB_APP_PASSWORD")
 basic_auth = username and password
 entra_auth_enabled = os.getenv("ENTRA_AUTH_ENABLED", "").lower() == "true"
 
+# File extensions that need Azure Document Intelligence for text extraction
+DOCUMENT_INTELLIGENCE_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
+# File extensions that are plain text
+PLAIN_TEXT_EXTENSIONS = {".txt", ".csv", ".md", ".json", ".html", ".xml", ".log", ".yaml", ".yml"}
+
+async def extract_text_from_file(filename: str, file_data: bytes) -> str:
+    """Extract text from a file using Azure Document Intelligence or direct decoding."""
+    ext = os.path.splitext(filename)[1].lower()
+
+    # Plain text files — decode directly
+    if ext in PLAIN_TEXT_EXTENSIONS:
+        text = file_data.decode("utf-8", errors="replace")
+        logger.info(f"Plain text extracted: {filename}, {len(text)} chars")
+        return text
+
+    # Complex documents — use Azure Document Intelligence
+    if ext in DOCUMENT_INTELLIGENCE_EXTENSIONS:
+        di_endpoint = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "")
+        if di_endpoint:
+            try:
+                from azure.ai.documentintelligence.aio import DocumentIntelligenceClient
+                from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
+                from azure.identity.aio import DefaultAzureCredential as AsyncDefaultAzureCredential
+
+                async with AsyncDefaultAzureCredential() as cred:
+                    client = DocumentIntelligenceClient(endpoint=di_endpoint, credential=cred)
+                    poller = await client.begin_analyze_document(
+                        "prebuilt-layout",
+                        body=AnalyzeDocumentRequest(bytes_source=file_data),
+                    )
+                    result = await poller.result()
+                    text = result.content or ""
+                    logger.info(f"Document Intelligence extracted: {filename}, {len(text)} chars")
+                    await client.close()
+                    return text
+            except Exception as e:
+                logger.error(f"Document Intelligence failed for {filename}: {e}")
+                # Fallback to pypdf for PDF
+                if ext == ".pdf":
+                    return _extract_pdf_fallback(filename, file_data)
+                return f"[Could not extract text from {filename}: {e}]"
+        else:
+            # No Document Intelligence endpoint — fallback
+            if ext == ".pdf":
+                return _extract_pdf_fallback(filename, file_data)
+            logger.warning(f"No AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT set, cannot extract {filename}")
+            return f"[Cannot extract text from {filename} — Document Intelligence not configured]"
+
+    # Unknown extension — try text decode
+    try:
+        text = file_data.decode("utf-8", errors="replace")
+        logger.info(f"Fallback text decode: {filename}, {len(text)} chars")
+        return text
+    except Exception:
+        return f"[Binary file: {filename}, {len(file_data)} bytes]"
+
+
+def _extract_pdf_fallback(filename: str, file_data: bytes) -> str:
+    """Fallback PDF extraction using pypdf."""
+    try:
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(file_data))
+        pages = [p.extract_text() or "" for p in reader.pages]
+        text = "\n".join(pages)
+        logger.info(f"pypdf fallback extracted: {filename}, {len(text)} chars")
+        return text
+    except Exception as e:
+        logger.error(f"pypdf fallback failed for {filename}: {e}")
+        return f"[Could not extract text from PDF: {filename}]"
+
+
 ALLOWED_UPLOAD_TYPES = {
     "application/pdf", "text/plain", "text/csv", "text/markdown",
     "application/json", "text/html",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
-ALLOWED_EXTENSIONS = {".pdf", ".txt", ".csv", ".md", ".json", ".html", ".docx", ".xlsx"}
+ALLOWED_EXTENSIONS = {
+    ".pdf", ".docx", ".xlsx", ".pptx",  # Document Intelligence
+    ".png", ".jpg", ".jpeg", ".tiff", ".bmp",  # Images (Document Intelligence OCR)
+    ".txt", ".csv", ".md", ".json", ".html", ".xml", ".log", ".yaml", ".yml",  # Plain text
+}
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
 
 
@@ -273,29 +349,22 @@ async def get_result(
             logger.info(f"get_result invoked for conversation={conversation.id}")
             input_created_at = datetime.now(timezone.utc).timestamp()
 
-            # Upload files to OpenAI and attach to conversation
-            file_ids = []
+            # Build input: extract text from files and inject into message
             if uploaded_files:
+                file_parts = []
                 for filename, file_data in uploaded_files:
-                    try:
-                        import io
-                        uploaded = await openai_client.files.create(
-                            file=(filename, io.BytesIO(file_data)),
-                            purpose="assistants",
-                        )
-                        file_ids.append(uploaded.id)
-                        logger.info(f"Uploaded file to OpenAI: {filename} -> {uploaded.id}")
-                    except Exception as e:
-                        logger.error(f"Failed to upload file {filename} to OpenAI: {e}")
+                    text_content = await extract_text_from_file(filename, file_data)
+                    file_parts.append(
+                        f"=== UPLOADED FILE: {filename} ===\n{text_content}\n=== END OF FILE ==="
+                    )
 
-            # Build input with file attachments
-            if file_ids:
-                input_content = [
-                    {"type": "input_text", "text": user_message},
-                ]
-                for fid in file_ids:
-                    input_content.append({"type": "input_file", "file_id": fid})
-                logger.info(f"get_result: message with {len(file_ids)} attached file(s)")
+                input_content = (
+                    f"The user uploaded {len(uploaded_files)} file(s). "
+                    f"Answer based on the uploaded file content.\n\n"
+                    + "\n\n".join(file_parts)
+                    + f"\n\nUser question: {user_message}"
+                )
+                logger.info(f"get_result: message with {len(uploaded_files)} file(s) injected, total length={len(input_content)}")
             else:
                 input_content = user_message
                 logger.info(f"get_result: text-only message, length={len(user_message)}")

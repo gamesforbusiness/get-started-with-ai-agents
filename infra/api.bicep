@@ -28,6 +28,8 @@ param entraAuthClientId string = ''
 param entraAuthTenantId string = ''
 @description('Storage account name for Table Storage')
 param storageAccountName string = ''
+@description('Azure Document Intelligence endpoint for file text extraction')
+param documentIntelligenceEndpoint string = ''
 
 resource apiIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: identityName
@@ -118,6 +120,10 @@ var env = [
   {
     name: 'AZURE_STORAGE_ACCOUNT_NAME'
     value: storageAccountName
+  }
+  {
+    name: 'AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT'
+    value: documentIntelligenceEndpoint
   }
 ]
 

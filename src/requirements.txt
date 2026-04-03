@@ -17,4 +17,5 @@ jinja2 # new dependent of fastapi
 azure-data-tables  # Table Storage for chat history
 azure-storage-blob  # Blob storage for file uploads
 python-multipart  # File upload support for FastAPI
-pypdf  # PDF text extraction for file upload
+pypdf  # PDF text extraction fallback
+azure-ai-documentintelligence  # Document text extraction (PDF, DOCX, XLSX, images)

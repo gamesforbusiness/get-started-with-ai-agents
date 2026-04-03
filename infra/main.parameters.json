@@ -131,6 +131,9 @@
     "blobContainerName": {
       "value": "${AZURE_BLOB_CONTAINER_NAME=documents}"
     },
+    "documentIntelligenceEndpoint": {
+      "value": "${AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT}"
+    },
     "entraAuthClientId": {
       "value": "${ENTRA_AUTH_CLIENT_ID}"
     },
