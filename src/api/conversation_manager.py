@@ -16,8 +16,8 @@ TABLE_NAME = "conversations"
 class ConversationManager:
     """Manages chat conversation metadata in Azure Table Storage."""
 
-    def __init__(self, account_name: str, credential: AsyncTokenCredential):
-        self.account_url = f"https://{account_name}.table.core.windows.net"
+    def __init__(self, endpoint_url: str, credential: AsyncTokenCredential):
+        self.account_url = endpoint_url.rstrip("/")
         self.credential = credential
         self._table_client = None
 
