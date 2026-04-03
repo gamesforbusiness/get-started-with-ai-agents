@@ -202,21 +202,19 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
     setIsSettingsPanelOpen(isOpen);
   };
 
-  const newThread = () => {
+  const newThread = async () => {
     setMessageList([]);
     setActiveConversationId(undefined);
-    deleteAllCookies();
+    // Call backend to clear httponly cookies
+    try {
+      await fetch("/chat/new", {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch (e) {
+      console.error("Failed to clear session:", e);
+    }
     setSidebarRefreshTrigger((prev) => prev + 1);
-  };
-
-  const deleteAllCookies = (): void => {
-    document.cookie.split(";").forEach((cookieStr: string) => {
-      const trimmedCookieStr = cookieStr.trim();
-      const eqPos = trimmedCookieStr.indexOf("=");
-      const name =
-        eqPos > -1 ? trimmedCookieStr.substring(0, eqPos) : trimmedCookieStr;
-      document.cookie = name + "=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/";
-    });
   };
 
   const handleSelectConversation = useCallback(async (conversationId: string) => {

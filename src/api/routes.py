@@ -613,6 +613,20 @@ async def chat(
     return response
 
 
+# --- Session Management ---
+
+@router.post("/chat/new")
+async def new_chat(
+    request: Request,
+    _ = auth_dependency,
+):
+    """Clear conversation cookies to start a new chat."""
+    response = JSONResponse(content={"status": "new_chat"})
+    response.delete_cookie("conversation_id", path="/")
+    response.delete_cookie("agent_id", path="/")
+    return response
+
+
 # --- Chat History Sidebar Endpoints ---
 
 @router.get("/conversations")
