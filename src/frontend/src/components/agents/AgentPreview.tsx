@@ -265,11 +265,15 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
     }
   }, []);
 
-  const handleDeleteConversation = useCallback((conversationId: string) => {
+  const handleDeleteConversation = useCallback(async (conversationId: string) => {
     if (conversationId === activeConversationId) {
       setMessageList([]);
       setActiveConversationId(undefined);
-      deleteAllCookies();
+      try {
+        await fetch("/chat/new", { method: "POST", credentials: "include" });
+      } catch (e) {
+        console.error("Failed to clear session:", e);
+      }
     }
   }, [activeConversationId]);
 
