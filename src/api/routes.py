@@ -421,14 +421,39 @@ async def chat(
             # Read file content (streaming, up to MAX_UPLOAD_SIZE)
             file_data = await uploaded_file.read(MAX_UPLOAD_SIZE + 1)
             if len(file_data) > MAX_UPLOAD_SIZE:
+                logger.warning(f"File too large, skipping: {filename}, size={len(file_data)}")
                 continue  # Skip files that exceed size limit
-            try:
-                text_content = file_data.decode("utf-8", errors="replace")
-            except Exception:
-                text_content = f"[Binary file: {filename}, size: {len(file_data)} bytes]"
-            file_contents.append({"name": filename, "content": text_content})
-            uploaded_file_names.append(filename)
-            logger.info(f"File extracted: {filename}, size={len(file_data)}, text_len={len(text_content)}")
+
+            text_content = ""
+            if ext == ".pdf":
+                # Extract text from PDF
+                try:
+                    import io
+                    from pypdf import PdfReader
+                    reader = PdfReader(io.BytesIO(file_data))
+                    pages_text = []
+                    for page in reader.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            pages_text.append(page_text)
+                    text_content = "\n".join(pages_text)
+                    logger.info(f"PDF extracted: {filename}, pages={len(reader.pages)}, text_len={len(text_content)}")
+                except Exception as pdf_err:
+                    logger.error(f"PDF extraction failed for {filename}: {pdf_err}")
+                    text_content = f"[Could not extract text from PDF: {filename}]"
+            else:
+                # Text-based files
+                try:
+                    text_content = file_data.decode("utf-8", errors="replace")
+                except Exception:
+                    text_content = f"[Binary file: {filename}, size: {len(file_data)} bytes]"
+
+            if text_content and len(text_content.strip()) > 0:
+                file_contents.append({"name": filename, "content": text_content})
+                uploaded_file_names.append(filename)
+                logger.info(f"File extracted: {filename}, size={len(file_data)}, text_len={len(text_content)}")
+            else:
+                logger.warning(f"File had no extractable text: {filename}")
         # Store uploaded files to blob storage if available
         storage_account = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
         if storage_account and uploaded_file_names:
