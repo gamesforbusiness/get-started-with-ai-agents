@@ -265,7 +265,7 @@ async def get_result(
     user_message: str,
     project_client: AIProjectClient,
     carrier: Dict[str, str],
-    file_contents: Optional[List[Dict[str, str]]] = None,
+    uploaded_files: Optional[List[tuple]] = None,
 ) -> AsyncGenerator[str, None]:
     ctx = TraceContextTextMapPropagator().extract(carrier=carrier)
     with tracer.start_as_current_span('get_result', context=ctx):
@@ -273,25 +273,37 @@ async def get_result(
             logger.info(f"get_result invoked for conversation={conversation.id}")
             input_created_at = datetime.now(timezone.utc).timestamp()
 
-            # Build input: user message + optional file contents
-            if file_contents:
-                file_parts = []
-                for fc in file_contents:
-                    file_parts.append(f"--- START OF UPLOADED FILE: {fc['name']} ---\n{fc['content']}\n--- END OF UPLOADED FILE: {fc['name']} ---")
-                full_input = (
-                    f"The user has uploaded {len(file_contents)} file(s). "
-                    f"Please analyze the UPLOADED file content below and answer the user's question based on it.\n\n"
-                    + "\n\n".join(file_parts)
-                    + f"\n\nUser's message: {user_message}"
-                )
-            else:
-                full_input = user_message
+            # Upload files to OpenAI and attach to conversation
+            file_ids = []
+            if uploaded_files:
+                for filename, file_data in uploaded_files:
+                    try:
+                        import io
+                        uploaded = await openai_client.files.create(
+                            file=(filename, io.BytesIO(file_data)),
+                            purpose="assistants",
+                        )
+                        file_ids.append(uploaded.id)
+                        logger.info(f"Uploaded file to OpenAI: {filename} -> {uploaded.id}")
+                    except Exception as e:
+                        logger.error(f"Failed to upload file {filename} to OpenAI: {e}")
 
-            logger.info(f"get_result: full_input length={len(full_input)}, has_files={file_contents is not None}")
+            # Build input with file attachments
+            if file_ids:
+                input_content = [
+                    {"type": "input_text", "text": user_message},
+                ]
+                for fid in file_ids:
+                    input_content.append({"type": "input_file", "file_id": fid})
+                logger.info(f"get_result: message with {len(file_ids)} attached file(s)")
+            else:
+                input_content = user_message
+                logger.info(f"get_result: text-only message, length={len(user_message)}")
+
             try:
                 response = await openai_client.responses.create(
                     conversation=conversation.id,
-                    input=full_input,
+                    input=input_content,
                     extra_body={
                             "agent_reference": {
                                 "name": agent.name,
@@ -401,7 +413,7 @@ async def chat(
     # Determine content type for file upload support
     content_type = request.headers.get("content-type", "")
     user_message_text = ""
-    file_contents: List[Dict[str, str]] = []
+    uploaded_files: List[tuple] = []  # List of (filename, bytes)
     uploaded_file_names: List[str] = []
 
     logger.info(f"POST /chat: content_type={content_type[:80]}")
@@ -412,83 +424,21 @@ async def chat(
         files = form.getlist("files")
         logger.info(f"Multipart upload: message='{user_message_text[:50]}', files_count={len(files)}")
         for i, uploaded_file in enumerate(files):
-            logger.info(f"Processing file {i}: type={type(uploaded_file).__name__}, isinstance_check={isinstance(uploaded_file, UploadFile)}")
             if not isinstance(uploaded_file, (UploadFile, StarletteUploadFile)):
-                logger.warning(f"File {i} is not UploadFile, skipping. Type: {type(uploaded_file)}")
+                logger.warning(f"File {i} skipped: not UploadFile, type={type(uploaded_file)}")
                 continue
-            # Validate file extension
             filename = uploaded_file.filename or "unknown"
             ext = os.path.splitext(filename)[1].lower()
-            logger.info(f"File {i}: name={filename}, ext={ext}")
             if ext not in ALLOWED_EXTENSIONS:
-                logger.warning(f"File {i} extension '{ext}' not in allowed list, skipping")
+                logger.warning(f"File {i} skipped: extension '{ext}' not allowed")
                 continue
-            # Read file content (streaming, up to MAX_UPLOAD_SIZE)
             file_data = await uploaded_file.read(MAX_UPLOAD_SIZE + 1)
             if len(file_data) > MAX_UPLOAD_SIZE:
-                logger.warning(f"File too large, skipping: {filename}, size={len(file_data)}")
-                continue  # Skip files that exceed size limit
-
-            text_content = ""
-            if ext == ".pdf":
-                # Extract text from PDF
-                try:
-                    import io
-                    from pypdf import PdfReader
-                    reader = PdfReader(io.BytesIO(file_data))
-                    pages_text = []
-                    for page in reader.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            pages_text.append(page_text)
-                    text_content = "\n".join(pages_text)
-                    logger.info(f"PDF extracted: {filename}, pages={len(reader.pages)}, text_len={len(text_content)}")
-                except Exception as pdf_err:
-                    logger.error(f"PDF extraction failed for {filename}: {pdf_err}")
-                    text_content = f"[Could not extract text from PDF: {filename}]"
-            else:
-                # Text-based files
-                try:
-                    text_content = file_data.decode("utf-8", errors="replace")
-                except Exception:
-                    text_content = f"[Binary file: {filename}, size: {len(file_data)} bytes]"
-
-            if text_content and len(text_content.strip()) > 0:
-                file_contents.append({"name": filename, "content": text_content})
-                uploaded_file_names.append(filename)
-                logger.info(f"File extracted: {filename}, size={len(file_data)}, text_len={len(text_content)}")
-            else:
-                logger.warning(f"File had no extractable text: {filename}")
-        # Store uploaded files to blob storage if available
-        storage_account = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
-        if storage_account and uploaded_file_names:
-            try:
-                from azure.storage.blob.aio import BlobServiceClient
-                from azure.identity.aio import DefaultAzureCredential as AsyncDefaultAzureCredential
-                async with AsyncDefaultAzureCredential() as cred:
-                    blob_service = BlobServiceClient(
-                        account_url=f"https://{storage_account}.blob.core.windows.net",
-                        credential=cred,
-                    )
-                    container_client = blob_service.get_container_client("user-uploads")
-                    for uploaded_file in files:
-                        if not isinstance(uploaded_file, (UploadFile, StarletteUploadFile)):
-                            continue
-                        filename = uploaded_file.filename or "unknown"
-                        ext = os.path.splitext(filename)[1].lower()
-                        if ext not in ALLOWED_EXTENSIONS:
-                            continue
-                        await uploaded_file.seek(0)
-                        blob_data = await uploaded_file.read()
-                        if len(blob_data) > MAX_UPLOAD_SIZE:
-                            continue
-                        blob_name = f"{user_id}/{conversation_id or 'new'}/{uuid.uuid4()}{ext}"
-                        blob_client = container_client.get_blob_client(blob_name)
-                        await blob_client.upload_blob(blob_data, overwrite=True)
-                        logger.info(f"Uploaded file to blob: {blob_name}")
-                    await blob_service.close()
-            except Exception as e:
-                logger.error(f"Error uploading to blob storage: {e}")
+                logger.warning(f"File {i} skipped: too large ({len(file_data)} bytes)")
+                continue
+            uploaded_files.append((filename, file_data))
+            uploaded_file_names.append(filename)
+            logger.info(f"File {i} accepted: {filename}, {len(file_data)} bytes")
     else:
         # Standard JSON body
         try:
@@ -517,7 +467,7 @@ async def chat(
 
     # Create the streaming response using the generator.
     response = StreamingResponse(
-        get_result(agent, conversation, user_message_text, project_client, carrier, file_contents if file_contents else None),
+        get_result(agent, conversation, user_message_text, project_client, carrier, uploaded_files if uploaded_files else None),
         headers=headers,
     )
 
