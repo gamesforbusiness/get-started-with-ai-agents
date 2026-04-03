@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  Body1,
   Button,
   Caption1,
   Spinner,

@@ -77,8 +77,11 @@ def get_user_id(request: Request) -> str:
     """Extract user ID from Easy Auth headers or return 'anonymous'."""
     # Easy Auth injects these headers after authentication
     principal_id = request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
+    principal_name = request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME", "")
     if principal_id:
+        logger.info(f"Easy Auth user: id={principal_id}, name={principal_name}")
         return principal_id
+    logger.info("No Easy Auth principal, using 'anonymous'")
     return "anonymous"
 
 
@@ -270,12 +273,18 @@ async def get_result(
             input_created_at = datetime.now(timezone.utc).timestamp()
 
             # Build input: user message + optional file contents
-            input_parts = []
             if file_contents:
+                file_parts = []
                 for fc in file_contents:
-                    input_parts.append(f"[Uploaded file: {fc['name']}]\n{fc['content']}\n")
-            input_parts.append(user_message)
-            full_input = "\n".join(input_parts)
+                    file_parts.append(f"--- START OF UPLOADED FILE: {fc['name']} ---\n{fc['content']}\n--- END OF UPLOADED FILE: {fc['name']} ---")
+                full_input = (
+                    f"The user has uploaded {len(file_contents)} file(s). "
+                    f"Please analyze the UPLOADED file content below and answer the user's question based on it.\n\n"
+                    + "\n\n".join(file_parts)
+                    + f"\n\nUser's message: {user_message}"
+                )
+            else:
+                full_input = user_message
 
             try:
                 response = await openai_client.responses.create(
@@ -483,6 +492,7 @@ async def chat(
     response.set_cookie("agent_id", agent_id, httponly=True, samesite="strict")
 
     # Upsert conversation in Table Storage for chat history sidebar
+    logger.info(f"Chat history upsert: user_id={user_id}, conversation_id={conversation_id}, conversation_mgr={conversation_mgr is not None}")
     if conversation_mgr:
         try:
             title = user_message_text[:50] if user_message_text else "New conversation"
@@ -497,8 +507,11 @@ async def chat(
                 title=title,
                 preview=preview,
             )
+            logger.info(f"Chat history upsert SUCCESS for conversation {conversation_id}")
         except Exception as e:
-            logger.error(f"Error upserting conversation to Table Storage: {e}")
+            logger.error(f"Chat history upsert FAILED: {e}", exc_info=True)
+    else:
+        logger.warning("Chat history: conversation_mgr is None, skipping upsert")
 
     return response
 
@@ -513,13 +526,16 @@ async def list_conversations(
 ):
     """List all conversations for the authenticated user."""
     user_id = get_user_id(request)
+    logger.info(f"GET /conversations: user_id={user_id}, conversation_mgr={conversation_mgr is not None}")
     if not conversation_mgr:
+        logger.warning("GET /conversations: conversation_mgr is None")
         return JSONResponse(content=[])
     try:
         conversations = await conversation_mgr.list_conversations(user_id)
+        logger.info(f"GET /conversations: found {len(conversations)} conversations for user {user_id}")
         return JSONResponse(content=conversations)
     except Exception as e:
-        logger.error(f"Error listing conversations: {e}")
+        logger.error(f"GET /conversations FAILED: {e}", exc_info=True)
         return JSONResponse(content=[])
 
 
