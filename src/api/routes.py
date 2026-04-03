@@ -286,6 +286,7 @@ async def get_result(
             else:
                 full_input = user_message
 
+            logger.info(f"get_result: full_input length={len(full_input)}, has_files={file_contents is not None}")
             try:
                 response = await openai_client.responses.create(
                     conversation=conversation.id,
@@ -402,11 +403,13 @@ async def chat(
     file_contents: List[Dict[str, str]] = []
     uploaded_file_names: List[str] = []
 
+    logger.info(f"POST /chat: content_type={content_type[:80]}")
     if "multipart/form-data" in content_type:
         # Handle file upload via multipart form data
         form = await request.form()
         user_message_text = form.get("message", "")
         files = form.getlist("files")
+        logger.info(f"Multipart upload: message='{user_message_text[:50]}', files_count={len(files)}")
         for uploaded_file in files:
             if not isinstance(uploaded_file, UploadFile):
                 continue
@@ -425,6 +428,7 @@ async def chat(
                 text_content = f"[Binary file: {filename}, size: {len(file_data)} bytes]"
             file_contents.append({"name": filename, "content": text_content})
             uploaded_file_names.append(filename)
+            logger.info(f"File extracted: {filename}, size={len(file_data)}, text_len={len(text_content)}")
         # Store uploaded files to blob storage if available
         storage_account = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
         if storage_account and uploaded_file_names:

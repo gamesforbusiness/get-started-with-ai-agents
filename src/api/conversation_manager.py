@@ -28,6 +28,13 @@ class ConversationManager:
                 credential=self.credential,
             )
             self._table_client = service.get_table_client(TABLE_NAME)
+            # Auto-create table if it doesn't exist
+            try:
+                await self._table_client.create_table()
+                logger.info(f"Created table '{TABLE_NAME}'")
+            except Exception:
+                # Table already exists or other non-critical error
+                pass
         return self._table_client
 
     async def upsert_conversation(
