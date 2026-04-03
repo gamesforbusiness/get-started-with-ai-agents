@@ -410,14 +410,18 @@ async def chat(
         user_message_text = form.get("message", "")
         files = form.getlist("files")
         logger.info(f"Multipart upload: message='{user_message_text[:50]}', files_count={len(files)}")
-        for uploaded_file in files:
+        for i, uploaded_file in enumerate(files):
+            logger.info(f"Processing file {i}: type={type(uploaded_file).__name__}, isinstance_check={isinstance(uploaded_file, UploadFile)}")
             if not isinstance(uploaded_file, UploadFile):
+                logger.warning(f"File {i} is not UploadFile, skipping. Type: {type(uploaded_file)}")
                 continue
             # Validate file extension
             filename = uploaded_file.filename or "unknown"
             ext = os.path.splitext(filename)[1].lower()
+            logger.info(f"File {i}: name={filename}, ext={ext}")
             if ext not in ALLOWED_EXTENSIONS:
-                continue  # Skip unsupported files
+                logger.warning(f"File {i} extension '{ext}' not in allowed list, skipping")
+                continue
             # Read file content (streaming, up to MAX_UPLOAD_SIZE)
             file_data = await uploaded_file.read(MAX_UPLOAD_SIZE + 1)
             if len(file_data) > MAX_UPLOAD_SIZE:
