@@ -70,22 +70,27 @@ DOCUMENT_INTELLIGENCE_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx", ".png", "
 PLAIN_TEXT_EXTENSIONS = {".txt", ".csv", ".md", ".json", ".html", ".xml", ".log", ".yaml", ".yml"}
 
 async def extract_text_from_file(filename: str, file_data: bytes) -> str:
-    """Extract text from a file using Azure Document Intelligence or direct decoding."""
+    """Extract maximum content from a file.
+
+    Uses Azure Document Intelligence with markdown output for rich documents
+    (preserves tables, headers, structure). Falls back to pypdf for PDF,
+    direct decode for text files.
+    """
     ext = os.path.splitext(filename)[1].lower()
 
-    # Plain text files — decode directly
+    # Plain text files — decode directly, no processing needed
     if ext in PLAIN_TEXT_EXTENSIONS:
         text = file_data.decode("utf-8", errors="replace")
         logger.info(f"Plain text extracted: {filename}, {len(text)} chars")
         return text
 
-    # Complex documents — use Azure Document Intelligence
+    # Complex documents — Azure Document Intelligence (markdown output for max structure)
     if ext in DOCUMENT_INTELLIGENCE_EXTENSIONS:
         di_endpoint = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "")
         if di_endpoint:
             try:
                 from azure.ai.documentintelligence.aio import DocumentIntelligenceClient
-                from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
+                from azure.ai.documentintelligence.models import AnalyzeDocumentRequest, DocumentAnalysisFeature, AnalyzeOutputOption
                 from azure.identity.aio import DefaultAzureCredential as AsyncDefaultAzureCredential
 
                 async with AsyncDefaultAzureCredential() as cred:
@@ -93,24 +98,56 @@ async def extract_text_from_file(filename: str, file_data: bytes) -> str:
                     poller = await client.begin_analyze_document(
                         "prebuilt-layout",
                         body=AnalyzeDocumentRequest(bytes_source=file_data),
+                        output_content_format="markdown",
+                        features=[
+                            DocumentAnalysisFeature.KEY_VALUE_PAIRS,
+                            DocumentAnalysisFeature.LANGUAGES,
+                        ],
                     )
                     result = await poller.result()
-                    text = result.content or ""
-                    logger.info(f"Document Intelligence extracted: {filename}, {len(text)} chars")
+
+                    # Build rich output: markdown content + key-value pairs + tables metadata
+                    parts = []
+
+                    # Main content in markdown (tables, headers, paragraphs preserved)
+                    if result.content:
+                        parts.append(result.content)
+
+                    # Extract key-value pairs (form fields, labels)
+                    if result.key_value_pairs:
+                        kv_lines = ["\n## Extracted Key-Value Pairs:"]
+                        for kv in result.key_value_pairs:
+                            key = kv.key.content if kv.key else ""
+                            value = kv.value.content if kv.value else ""
+                            confidence = kv.confidence or 0
+                            if key and confidence > 0.5:
+                                kv_lines.append(f"- **{key}**: {value}")
+                        if len(kv_lines) > 1:
+                            parts.append("\n".join(kv_lines))
+
+                    # Page-level info
+                    if result.pages:
+                        page_info = f"\n[Document: {len(result.pages)} page(s)"
+                        if result.languages:
+                            langs = [l.locale for l in result.languages[:3]]
+                            page_info += f", language(s): {', '.join(langs)}"
+                        page_info += "]"
+                        parts.append(page_info)
+
+                    text = "\n\n".join(parts)
+                    logger.info(f"Document Intelligence extracted: {filename}, {len(text)} chars, {len(result.pages or [])} pages")
                     await client.close()
                     return text
             except Exception as e:
                 logger.error(f"Document Intelligence failed for {filename}: {e}")
-                # Fallback to pypdf for PDF
                 if ext == ".pdf":
                     return _extract_pdf_fallback(filename, file_data)
                 return f"[Could not extract text from {filename}: {e}]"
         else:
-            # No Document Intelligence endpoint — fallback
             if ext == ".pdf":
                 return _extract_pdf_fallback(filename, file_data)
             logger.warning(f"No AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT set, cannot extract {filename}")
-            return f"[Cannot extract text from {filename} — Document Intelligence not configured]"
+            return f"[Cannot extract text from {filename} — configure AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT for {ext} support]"
 
     # Unknown extension — try text decode
     try:
@@ -122,14 +159,18 @@ async def extract_text_from_file(filename: str, file_data: bytes) -> str:
 
 
 def _extract_pdf_fallback(filename: str, file_data: bytes) -> str:
-    """Fallback PDF extraction using pypdf."""
+    """Fallback PDF extraction using pypdf — gets text but loses table structure."""
     try:
         import io
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(file_data))
-        pages = [p.extract_text() or "" for p in reader.pages]
-        text = "\n".join(pages)
-        logger.info(f"pypdf fallback extracted: {filename}, {len(text)} chars")
+        pages = []
+        for i, page in enumerate(reader.pages):
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                pages.append(f"--- Page {i+1} ---\n{page_text}")
+        text = "\n\n".join(pages)
+        logger.info(f"pypdf fallback extracted: {filename}, {len(text)} chars, {len(reader.pages)} pages")
         return text
     except Exception as e:
         logger.error(f"pypdf fallback failed for {filename}: {e}")
@@ -358,11 +399,14 @@ async def get_result(
                         f"=== UPLOADED FILE: {filename} ===\n{text_content}\n=== END OF FILE ==="
                     )
 
+                file_list = ", ".join(f[0] for f in uploaded_files)
                 input_content = (
-                    f"The user uploaded {len(uploaded_files)} file(s). "
-                    f"Answer based on the uploaded file content.\n\n"
+                    f"[SYSTEM: The user has uploaded {len(uploaded_files)} file(s): {file_list}. "
+                    f"The full extracted content of each file is provided below. "
+                    f"Use this content as your PRIMARY source to answer the user's question. "
+                    f"Reference specific parts of the uploaded file(s) in your answer.]\n\n"
                     + "\n\n".join(file_parts)
-                    + f"\n\nUser question: {user_message}"
+                    + f"\n\n---\nUser's message: {user_message}"
                 )
                 logger.info(f"get_result: message with {len(uploaded_files)} file(s) injected, total length={len(input_content)}")
             else:
