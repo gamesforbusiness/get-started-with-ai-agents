@@ -76,6 +76,8 @@ async def lifespan(app: fastapi.FastAPI):
             # Initialize ConversationManager for chat history (Table Storage)
             # Prefer Service Connector endpoint, fall back to account name
             storage_endpoint = os.environ.get("AZURE_STORAGETABLE_RESOURCEENDPOINT", "")
+            storage_account_name_env = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "")
+            logger.info(f"Storage config: AZURE_STORAGETABLE_RESOURCEENDPOINT='{storage_endpoint}', AZURE_STORAGE_ACCOUNT_NAME='{storage_account_name_env}'")
             storage_account_name = ""
             if storage_endpoint:
                 try:
@@ -85,12 +87,12 @@ async def lifespan(app: fastapi.FastAPI):
                 except Exception as e:
                     logger.error(f"Failed to parse AZURE_STORAGETABLE_RESOURCEENDPOINT: {e}")
             if not storage_account_name:
-                storage_account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "")
+                storage_account_name = storage_account_name_env
             if storage_account_name:
                 from api.conversation_manager import ConversationManager
                 conv_mgr = ConversationManager(storage_account_name, credential)
                 app.state.conversation_manager = conv_mgr
-                logger.info("Initialized ConversationManager with Table Storage")
+                logger.info(f"Initialized ConversationManager with Table Storage, account_url: {conv_mgr.account_url}")
             else:
                 app.state.conversation_manager = None
                 logger.info("No AZURE_STORAGE_ACCOUNT_NAME or AZURE_STORAGETABLE_RESOURCEENDPOINT set, chat history disabled")
