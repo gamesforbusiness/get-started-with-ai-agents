@@ -10,6 +10,7 @@ from typing import AsyncGenerator, Mapping, Optional, Dict, List
 
 import fastapi
 from fastapi import Request, Depends, HTTPException, UploadFile, File, Form
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import JSONResponse
@@ -412,7 +413,7 @@ async def chat(
         logger.info(f"Multipart upload: message='{user_message_text[:50]}', files_count={len(files)}")
         for i, uploaded_file in enumerate(files):
             logger.info(f"Processing file {i}: type={type(uploaded_file).__name__}, isinstance_check={isinstance(uploaded_file, UploadFile)}")
-            if not isinstance(uploaded_file, UploadFile):
+            if not isinstance(uploaded_file, (UploadFile, StarletteUploadFile)):
                 logger.warning(f"File {i} is not UploadFile, skipping. Type: {type(uploaded_file)}")
                 continue
             # Validate file extension
@@ -471,7 +472,7 @@ async def chat(
                     )
                     container_client = blob_service.get_container_client("user-uploads")
                     for uploaded_file in files:
-                        if not isinstance(uploaded_file, UploadFile):
+                        if not isinstance(uploaded_file, (UploadFile, StarletteUploadFile)):
                             continue
                         filename = uploaded_file.filename or "unknown"
                         ext = os.path.splitext(filename)[1].lower()
