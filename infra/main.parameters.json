@@ -130,6 +130,12 @@
     },
     "blobContainerName": {
       "value": "${AZURE_BLOB_CONTAINER_NAME=documents}"
+    },
+    "entraAuthClientId": {
+      "value": "${ENTRA_AUTH_CLIENT_ID}"
+    },
+    "entraAuthTenantId": {
+      "value": "${ENTRA_AUTH_TENANT_ID}"
     }
   }
 }

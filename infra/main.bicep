@@ -129,6 +129,12 @@ param searchConnectionId string = ''
 @description('The name of the blob container for document storage')
 param blobContainerName string = 'documents'
 
+@description('Entra ID App Registration client ID for Easy Auth')
+param entraAuthClientId string = ''
+
+@description('Entra ID tenant ID for Easy Auth (defaults to current tenant)')
+param entraAuthTenantId string = ''
+
 var abbrs = loadJsonContent('./abbreviations.json')
 
 var resourceToken = templateValidationMode? toLower(uniqueString(subscription().id, environmentName, location, seed)) :  toLower(uniqueString(subscription().id, environmentName, location))
@@ -316,6 +322,9 @@ module api 'api.bicep' = {
     storageAccountResourceId: ai!.outputs.storageAccountId
     blobContainerName: blobContainerName
     useAzureAISearch: useSearchService
+    entraAuthClientId: entraAuthClientId
+    entraAuthTenantId: !empty(entraAuthTenantId) ? entraAuthTenantId : tenant().tenantId
+    storageAccountName: ai!.outputs.storageAccountName
   }
 }
 
@@ -422,7 +431,7 @@ module backendRoleStorageAccountContributorRG 'core/security/role.bicep' = if (u
   }
 }
 
-module backendRoleStorageBlobDataContributorRG 'core/security/role.bicep' = if (useSearchService) {
+module backendRoleStorageBlobDataContributorRG 'core/security/role.bicep' = {
   name: 'backend-role-storage-blob-data-contributor-rg'
   scope: rg
   params: {
@@ -482,6 +491,16 @@ module userRoleStorageBlobDataContributorRG 'core/security/role.bicep' = if (use
   }
 }
 
+module backendRoleStorageTableDataContributorRG 'core/security/role.bicep' = {
+  name: 'backend-role-storage-table-data-contributor-rg'
+  scope: rg
+  params: {
+    principalType: 'ServicePrincipal'
+    principalId: api.outputs.SERVICE_API_IDENTITY_PRINCIPAL_ID
+    roleDefinitionId: '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
+  }
+}
+
 module backendRoleAzureAIDeveloperRG 'core/security/role.bicep' = {
   name: 'backend-role-azureai-developer-rg'
   scope: rg
@@ -519,3 +538,6 @@ output SERVICE_API_URI string = api.outputs.SERVICE_API_URI
 output SERVICE_API_ENDPOINTS array = ['${api.outputs.SERVICE_API_URI}']
 output SEARCH_CONNECTION_ID string = searchConnectionId_final
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = containerApps.outputs.registryLoginServer
+output ENTRA_AUTH_CLIENT_ID string = entraAuthClientId
+output ENTRA_AUTH_TENANT_ID string = !empty(entraAuthTenantId) ? entraAuthTenantId : tenant().tenantId
+output AZURE_STORAGE_ACCOUNT_NAME string = ai!.outputs.storageAccountName

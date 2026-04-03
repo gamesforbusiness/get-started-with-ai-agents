@@ -72,6 +72,18 @@ async def lifespan(app: fastapi.FastAPI):
 
             app.state.ai_project = project_client
             app.state.agent_version_obj = agent_version_obj
+
+            # Initialize ConversationManager for chat history (Table Storage)
+            storage_account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "")
+            if storage_account_name:
+                from api.conversation_manager import ConversationManager
+                conv_mgr = ConversationManager(storage_account_name, credential)
+                app.state.conversation_manager = conv_mgr
+                logger.info("Initialized ConversationManager with Table Storage")
+            else:
+                app.state.conversation_manager = None
+                logger.info("No AZURE_STORAGE_ACCOUNT_NAME set, chat history disabled")
+
             yield
 
     except Exception as e:

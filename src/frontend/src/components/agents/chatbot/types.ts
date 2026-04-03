@@ -45,7 +45,7 @@ export interface IChatItem {
 }
 
 export interface ChatInputProps {
-  onSubmit: (message: string) => void;
+  onSubmit: (message: string, files?: File[]) => void;
   isGenerating: boolean;
   currentUserMessage?: string;
 }
@@ -67,7 +67,7 @@ export interface IUserMessageProps {
 export interface ChatContextType {
   messageList: IChatItem[];
   isResponding: boolean;
-  onSend: (message: string) => void;
+  onSend: (message: string, files?: File[]) => void;
 }
 
 export interface AgentPreviewChatBotProps {

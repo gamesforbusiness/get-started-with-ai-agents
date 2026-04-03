@@ -1,1 +1,2 @@
 echo "💡 (Optional) To setup username and password for the web application, run './scripts/setup_credential.sh'."
+echo "💡 (Recommended) To setup Entra ID authentication, run './scripts/setup_entra_auth.sh' then 'azd provision && azd deploy'."

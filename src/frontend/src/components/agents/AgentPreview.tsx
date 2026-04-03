@@ -1,4 +1,4 @@
-import { ReactNode, useState, useMemo, useEffect } from "react";
+import { ReactNode, useState, useMemo, useEffect, useCallback } from "react";
 import {
   Body1,
   Button,
@@ -6,12 +6,17 @@ import {
   Spinner,
   Title3,
 } from "@fluentui/react-components";
-import { ChatRegular, MoreHorizontalRegular } from "@fluentui/react-icons";
+import {
+  ChatRegular,
+  MoreHorizontalRegular,
+  NavigationRegular,
+} from "@fluentui/react-icons";
 import clsx from "clsx";
 
 import { AgentIcon } from "./AgentIcon";
 import { SettingsPanel } from "../core/SettingsPanel";
 import { AgentPreviewChatBot } from "./AgentPreviewChatBot";
+import { ChatHistorySidebar } from "./ChatHistorySidebar";
 import { MenuButton } from "../core/MenuButton/MenuButton";
 import { IChatItem } from "./chatbot/types";
 import { Waves } from "./Waves";
@@ -71,7 +76,7 @@ const preprocessContent = (
       // Secondary sort: descending label (as tiebreaker)
       return b.label.localeCompare(a.label);
     })
-    .filter((annotation, index, self) => 
+    .filter((annotation, index, self) =>
       index === self.findIndex(a => a.label === annotation.label && a.index === annotation.index))
     .forEach((annotation) => {
       // Only process if the index is valid and within bounds
@@ -114,9 +119,12 @@ const formatTimestampToLocalTime = (timestampStr: string): string => {
 
 export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
   const [isSettingsPanelOpen, setIsSettingsPanelOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [messageList, setMessageList] = useState<IChatItem[]>([]);
   const [isResponding, setIsResponding] = useState(false);
   const [isLoadingChatHistory, setIsLoadingChatHistory] = useState(true);
+  const [activeConversationId, setActiveConversationId] = useState<string | undefined>();
+  const [sidebarRefreshTrigger, setSidebarRefreshTrigger] = useState(0);
 
   const loadChatHistory = async () => {
     try {
@@ -157,7 +165,6 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
               role: "assistant", // Assuming 'assistant' role for non-user
               isAnswer: true, // Assuming this property for assistant messages
               more: { time: localTime },
-              // annotations: entry.annotations, // If you plan to use annotations
             });
           }
         }
@@ -197,7 +204,9 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
 
   const newThread = () => {
     setMessageList([]);
+    setActiveConversationId(undefined);
     deleteAllCookies();
+    setSidebarRefreshTrigger((prev) => prev + 1);
   };
 
   const deleteAllCookies = (): void => {
@@ -210,10 +219,71 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
     });
   };
 
-  const onSend = async (message: string) => {
+  const handleSelectConversation = useCallback(async (conversationId: string) => {
+    setIsLoadingChatHistory(true);
+    setMessageList([]);
+    setActiveConversationId(conversationId);
+    try {
+      const response = await fetch(`/conversations/${conversationId}/load`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (response.ok) {
+        const json_response: Array<{
+          role: string;
+          content: string;
+          created_at: string;
+          annotations?: IAnnotation[];
+        }> = await response.json();
+
+        const historyMessages: IChatItem[] = [];
+        const reversedResponse = [...json_response].reverse();
+
+        for (const entry of reversedResponse) {
+          const localTime = formatTimestampToLocalTime(entry.created_at);
+          if (entry.role === "user") {
+            historyMessages.push({
+              id: crypto.randomUUID(),
+              content: entry.content,
+              role: "user",
+              more: { time: localTime },
+            });
+          } else {
+            historyMessages.push({
+              id: `assistant-hist-${Date.now()}-${Math.random()}`,
+              content: preprocessContent(entry.content, entry.annotations),
+              role: "assistant",
+              isAnswer: true,
+              more: { time: localTime },
+            });
+          }
+        }
+        setMessageList(historyMessages);
+      }
+    } catch (error) {
+      console.error("Failed to load conversation:", error);
+    } finally {
+      setIsLoadingChatHistory(false);
+    }
+  }, []);
+
+  const handleDeleteConversation = useCallback((conversationId: string) => {
+    if (conversationId === activeConversationId) {
+      setMessageList([]);
+      setActiveConversationId(undefined);
+      deleteAllCookies();
+    }
+  }, [activeConversationId]);
+
+  const onSend = async (message: string, files?: File[]) => {
+    const fileNames = files?.map((f) => f.name) || [];
+    const displayContent = fileNames.length > 0
+      ? `${message}\n\n[Files: ${fileNames.join(", ")}]`
+      : message;
+
     const userMessage: IChatItem = {
       id: `user-${Date.now()}`,
-      content: message,
+      content: displayContent,
       role: "user",
       more: { time: new Date().toISOString() },
     };
@@ -221,34 +291,46 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
     setMessageList((prev) => [...prev, userMessage]);
 
     try {
-      const postData = { message: message };
-      // IMPORTANT: Add credentials: 'include' if server cookies are critical
-      // and if your backend is on the same domain or properly configured for cross-site cookies.
-
       setIsResponding(true);
-      const response = await fetch("/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(postData),
-        credentials: "include", // <--- allow cookies to be included
-      });
 
-      // Log out the response status in case there’s an error
+      let response: Response;
+      if (files && files.length > 0) {
+        // Multipart form data for file upload
+        const formData = new FormData();
+        formData.append("message", message);
+        for (const file of files) {
+          formData.append("files", file);
+        }
+        response = await fetch("/chat", {
+          method: "POST",
+          body: formData,
+          credentials: "include",
+        });
+      } else {
+        // Standard JSON
+        response = await fetch("/chat", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ message }),
+          credentials: "include",
+        });
+      }
+
       console.log(
         "[ChatClient] Response status:",
         response.status,
         response.statusText
       );
 
-      // If server returned e.g. 400 or 500, that’s not an exception, but we can check manually:
       if (!response.ok) {
         console.error(
           "[ChatClient] Response not OK:",
           response.status,
           response.statusText
         );
+        setIsResponding(false);
         return;
       }
 
@@ -260,6 +342,9 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
 
       console.log("[ChatClient] Starting to handle streaming response...");
       handleMessages(response.body);
+
+      // Refresh sidebar after sending
+      setSidebarRefreshTrigger((prev) => prev + 1);
     } catch (error: any) {
       setIsResponding(false);
       if (error.name === "AbortError") {
@@ -346,7 +431,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
                   console.log(
                     "[ChatClient] Created new messageDiv for additional completed message."
                   );
-                  
+
                   // Reset for the new message
                   accumulatedContent = data.content;
                   annotations = data.annotations || [];
@@ -357,12 +442,12 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
                   annotations = data.annotations || [];
                   hasReceivedCompletedMessage = true;
                 }
-                
+
                 console.log(
                   "[ChatClient] Received completed message:",
                   accumulatedContent
                 );
-                
+
                 isStreaming = false;
                 setIsResponding(false);
               } else {
@@ -374,7 +459,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
                   console.log(
                     "[ChatClient] Created new messageDiv for streaming after completed message."
                   );
-                  
+
                   // Reset for new streaming content
                   annotations = [];
                   accumulatedContent = "";
@@ -382,7 +467,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
                 }
                 accumulatedContent += data.content;
                 isStreaming = true;
-                
+
                 console.log(
                   "[ChatClient] Received streaming chunk:",
                   data.content
@@ -432,7 +517,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
       const preprocessedContent = preprocessContent(
         accumulatedContent,
         annotations
-      ); 
+      );
       let htmlContent = preprocessedContent;
       if (!chatItem) {
         throw new Error("Message content div not found in the template.");
@@ -522,90 +607,108 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
       <div className={styles.wavesContainer}>
         <Waves paused={!isEmpty} />
       </div>
-      <div className={styles.topBar}>
-        <div className={styles.leftSection}>
-          {agentDetails.name ? (
-            <div className={styles.agentIconContainer}>
-              <AgentIcon
-                alt=""
-                iconClassName={styles.agentIcon}
-                iconName={agentDetails.metadata?.logo}
-              />
-              <Body1 as="h1" className={styles.agentName}>
-                {agentDetails.name}
-              </Body1>
-            </div>
-          ) : (
-            <div className={styles.agentIconContainer}>
-              <div
-                className={clsx(styles.agentIcon, {
-                  [styles.newAgent]: true,
-                })}
-              />
-              <Body1
-                as="h1"
-                className={clsx(styles.agentName, {
-                  [styles.newAgent]: true,
-                })}
-              >
-                Agent Name
-              </Body1>
-            </div>
-          )}
-        </div>
-        <div className={styles.rightSection}>
-          <Button
-            appearance="subtle"
-            icon={<ChatRegular aria-hidden={true} />}
-            onClick={newThread}
-          >
-            New Chat
-          </Button>
-          <MenuButton
-            menuButtonText=""
-            menuItems={menuItems}
-            menuButtonProps={{
-              appearance: "subtle",
-              icon: <MoreHorizontalRegular />,
-              "aria-label": "Settings",
-            }}
-          />
-        </div>
-      </div>
 
-      <div className={styles.content}>
-        <div className={styles.chatbot}>
-          {isLoadingChatHistory ? (
-            <Spinner label={"Loading chat history..."} />
-          ) : (
-            <>
-              {isEmpty && (
-                <div className={styles.emptyChatContainer}>
-                  <AgentIcon
-                    alt=""
-                    iconClassName={styles.emptyStateAgentIcon}
-                    iconName={agentDetails.metadata?.logo}
-                  />
-                  <Caption1 className={styles.agentName}>
-                    {agentDetails.name}
-                  </Caption1>
-                  <Title3>How can I help you today?</Title3>
-                </div>
-              )}
-              <AgentPreviewChatBot
-                agentName={agentDetails.name}
-                agentLogo={agentDetails.metadata?.logo}
-                chatContext={chatContext}
-              />
-            </>
-          )}
+      {/* Chat History Sidebar */}
+      <ChatHistorySidebar
+        isOpen={isSidebarOpen}
+        activeConversationId={activeConversationId}
+        onSelectConversation={handleSelectConversation}
+        onDeleteConversation={handleDeleteConversation}
+        refreshTrigger={sidebarRefreshTrigger}
+      />
+
+      <div className={styles.mainArea}>
+        <div className={styles.topBar}>
+          <div className={styles.leftSection}>
+            <Button
+              appearance="subtle"
+              icon={<NavigationRegular />}
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              aria-label="Toggle chat history"
+            />
+            {agentDetails.name ? (
+              <div className={styles.agentIconContainer}>
+                <AgentIcon
+                  alt=""
+                  iconClassName={styles.agentIcon}
+                  iconName={agentDetails.metadata?.logo}
+                />
+                <Body1 as="h1" className={styles.agentName}>
+                  {agentDetails.name}
+                </Body1>
+              </div>
+            ) : (
+              <div className={styles.agentIconContainer}>
+                <div
+                  className={clsx(styles.agentIcon, {
+                    [styles.newAgent]: true,
+                  })}
+                />
+                <Body1
+                  as="h1"
+                  className={clsx(styles.agentName, {
+                    [styles.newAgent]: true,
+                  })}
+                >
+                  Agent Name
+                </Body1>
+              </div>
+            )}
+          </div>
+          <div className={styles.rightSection}>
+            <Button
+              appearance="subtle"
+              icon={<ChatRegular aria-hidden={true} />}
+              onClick={newThread}
+            >
+              New Chat
+            </Button>
+            <MenuButton
+              menuButtonText=""
+              menuItems={menuItems}
+              menuButtonProps={{
+                appearance: "subtle",
+                icon: <MoreHorizontalRegular />,
+                "aria-label": "Settings",
+              }}
+            />
+          </div>
         </div>
 
-        {agentDetails.agentPlaygroundUrl && agentDetails.agentPlaygroundUrl.length > 0 ? (
-          <BuiltWithBadge className={styles.builtWithBadge} agentPlaygroundUrl={agentDetails.agentPlaygroundUrl} />
-        ) : (
-          <></>
-        )}
+        <div className={styles.content}>
+          <div className={styles.chatbot}>
+            {isLoadingChatHistory ? (
+              <Spinner label={"Loading chat history..."} />
+            ) : (
+              <>
+                {isEmpty && (
+                  <div className={styles.emptyChatContainer}>
+                    <AgentIcon
+                      alt=""
+                      iconClassName={styles.emptyStateAgentIcon}
+                      iconName={agentDetails.metadata?.logo}
+                    />
+                    <Caption1 className={styles.agentName}>
+                      {agentDetails.name}
+                    </Caption1>
+                    <Title3>How can I help you today?</Title3>
+                  </div>
+                )}
+                <AgentPreviewChatBot
+                  agentName={agentDetails.name}
+                  agentLogo={agentDetails.metadata?.logo}
+                  chatContext={chatContext}
+                />
+              </>
+            )}
+          </div>
+
+          {agentDetails.agentPlaygroundUrl && agentDetails.agentPlaygroundUrl.length > 0 ? (
+            <BuiltWithBadge className={styles.builtWithBadge} agentPlaygroundUrl={agentDetails.agentPlaygroundUrl} />
+          ) : (
+            <></>
+          )}
+        </div>
       </div>
 
       {/* Settings Panel */}

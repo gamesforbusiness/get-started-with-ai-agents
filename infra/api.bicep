@@ -22,6 +22,13 @@ param storageAccountResourceId string
 param blobContainerName string
 param useAzureAISearch bool = false
 
+@description('Entra ID client ID for Easy Auth')
+param entraAuthClientId string = ''
+@description('Entra ID tenant ID for Easy Auth')
+param entraAuthTenantId string = ''
+@description('Storage account name for Table Storage')
+param storageAccountName string = ''
+
 resource apiIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: identityName
   location: location
@@ -100,6 +107,18 @@ var env = [
     name: 'USE_AZURE_AI_SEARCH_SERVICE'
     value: string(useAzureAISearch)
   }
+  {
+    name: 'ENTRA_AUTH_ENABLED'
+    value: string(!empty(entraAuthClientId))
+  }
+  {
+    name: 'ENTRA_AUTH_CLIENT_ID'
+    value: entraAuthClientId
+  }
+  {
+    name: 'AZURE_STORAGE_ACCOUNT_NAME'
+    value: storageAccountName
+  }
 ]
 
 
@@ -115,6 +134,8 @@ module app 'core/host/container-app-upsert.bicep' = {
     containerAppsEnvironmentName: containerAppsEnvironmentName
     targetPort: 50505
     env: env
+    entraAuthClientId: entraAuthClientId
+    entraAuthTenantId: entraAuthTenantId
   }
 }
 

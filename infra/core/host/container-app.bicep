@@ -77,6 +77,12 @@ param serviceType string = ''
 @description('The target port for the container')
 param targetPort int = 80
 
+@description('Entra ID client ID for Easy Auth. Leave empty to disable.')
+param entraAuthClientId string = ''
+
+@description('Entra ID tenant ID for Easy Auth.')
+param entraAuthTenantId string = ''
+
 resource userIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = if (!empty(identityName)) {
   name: identityName
 }
@@ -161,6 +167,34 @@ resource app 'Microsoft.App/containerApps@2023-05-02-preview' = {
 
 resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2023-05-01' existing = {
   name: containerAppsEnvironmentName
+}
+
+// Easy Auth configuration for Entra ID
+resource authConfig 'Microsoft.App/containerApps/authConfigs@2023-05-02-preview' = if (!empty(entraAuthClientId)) {
+  parent: app
+  name: 'current'
+  properties: {
+    platform: {
+      enabled: true
+    }
+    globalValidation: {
+      unauthenticatedClientAction: 'RedirectToLoginPage'
+      redirectToProvider: 'azureactivedirectory'
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        registration: {
+          clientId: entraAuthClientId
+          openIdIssuer: 'https://login.microsoftonline.com/${entraAuthTenantId}/v2.0'
+        }
+        validation: {
+          defaultAuthorizationPolicy: {
+            allowedApplications: []
+          }
+        }
+      }
+    }
+  }
 }
 
 output defaultDomain string = containerAppsEnvironment.properties.defaultDomain

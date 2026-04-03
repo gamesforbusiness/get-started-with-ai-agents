@@ -4,12 +4,12 @@
 import asyncio
 import json
 import os
+import uuid
 from datetime import datetime, timezone
-from typing import AsyncGenerator, Mapping, Optional, Dict
-
+from typing import AsyncGenerator, Mapping, Optional, Dict, List
 
 import fastapi
-from fastapi import Request, Depends, HTTPException
+from fastapi import Request, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import JSONResponse
@@ -52,29 +52,83 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from typing import Optional
 import secrets
 
-security = HTTPBasic()
+# --- Authentication ---
+# Supports both Entra ID Easy Auth (via X-MS-CLIENT-PRINCIPAL headers)
+# and legacy HTTP Basic Auth (via WEB_APP_USERNAME/WEB_APP_PASSWORD env vars)
+
+security = HTTPBasic(auto_error=False)
 
 username = os.getenv("WEB_APP_USERNAME")
 password = os.getenv("WEB_APP_PASSWORD")
 basic_auth = username and password
+entra_auth_enabled = os.getenv("ENTRA_AUTH_ENABLED", "").lower() == "true"
 
-def authenticate(credentials: Optional[HTTPBasicCredentials] = Depends(security)) -> None:
+ALLOWED_UPLOAD_TYPES = {
+    "application/pdf", "text/plain", "text/csv", "text/markdown",
+    "application/json", "text/html",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+ALLOWED_EXTENSIONS = {".pdf", ".txt", ".csv", ".md", ".json", ".html", ".docx", ".xlsx"}
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
 
-    if not basic_auth:
-        logger.info("Skipping authentication: WEB_APP_USERNAME or WEB_APP_PASSWORD not set.")
+
+def get_user_id(request: Request) -> str:
+    """Extract user ID from Easy Auth headers or return 'anonymous'."""
+    # Easy Auth injects these headers after authentication
+    principal_id = request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
+    if principal_id:
+        return principal_id
+    return "anonymous"
+
+
+def get_user_name(request: Request) -> str:
+    """Extract user display name from Easy Auth headers."""
+    return request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME", "")
+
+
+def authenticate(
+    request: Request,
+    credentials: Optional[HTTPBasicCredentials] = Depends(security),
+) -> None:
+    """Authenticate the request using Entra ID Easy Auth or HTTP Basic Auth."""
+    # If Entra ID Easy Auth is enabled, the platform handles auth before the request reaches us.
+    # We just check that the principal header is present.
+    if entra_auth_enabled:
+        principal_id = request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
+        if principal_id:
+            return  # Authenticated via Easy Auth
+        # In production with Easy Auth enabled, unauthenticated requests are redirected
+        # by the platform. If we get here without a principal, it's likely a misconfiguration.
+        logger.warning("Entra Auth enabled but no X-MS-CLIENT-PRINCIPAL-ID header found")
+
+    # Fallback to HTTP Basic Auth
+    if basic_auth:
+        if not credentials:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+                headers={"WWW-Authenticate": "Basic"},
+            )
+        correct_username = secrets.compare_digest(credentials.username, username)
+        correct_password = secrets.compare_digest(credentials.password, password)
+        if not (correct_username and correct_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials",
+                headers={"WWW-Authenticate": "Basic"},
+            )
         return
-    
-    correct_username = secrets.compare_digest(credentials.username, username)
-    correct_password = secrets.compare_digest(credentials.password, password)
-    if not (correct_username and correct_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return
 
-auth_dependency = Depends(authenticate) if basic_auth else None
+    # No auth configured — allow access (development mode)
+    if not entra_auth_enabled and not basic_auth:
+        logger.info("Skipping authentication: no auth method configured.")
+        return
+
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+
+auth_dependency = Depends(authenticate)
 
 def cleanup_created_at_metadata(metadata: Mapping[str, str]) -> None:
     """Remove oldest created_at timestamp entries to keep metadata under 16 items limit."""
@@ -98,6 +152,9 @@ def get_agent_version_obj(request: Request) -> AgentVersionObject:
 def get_openai_client(request: Request) -> AsyncOpenAI:
     return get_project_client(request).get_openai_client()
 
+def get_conversation_manager(request: Request):
+    return request.app.state.conversation_manager
+
 def get_created_at_label(message_id: str) -> str:
     return f"{message_id}_created_at"
 
@@ -115,7 +172,7 @@ async def get_or_create_conversation(
     Returns the conversation_id.
     """
     conversation: Optional[Conversation] = None
-    
+
     # Attempt to get an existing conversation if we have matching agent and conversation IDs
     if conversation_id and agent_id == current_agent_id:
         try:
@@ -134,7 +191,7 @@ async def get_or_create_conversation(
         except Exception as e:
             logger.error(f"Error creating conversation: {e}")
             raise HTTPException(status_code=400, detail=f"Error handling conversation: {e}")
-    
+
     return conversation
 
 async def get_message_and_annotations(event: Message | ResponseOutputMessage) -> Dict:
@@ -158,7 +215,7 @@ async def get_message_and_annotations(event: Message | ResponseOutputMessage) ->
                     "index": annotation.start_index
                 }
                 annotations.append(ann)
-            
+
     return {
         'content': text,
         'annotations': annotations
@@ -168,7 +225,7 @@ async def get_message_and_annotations(event: Message | ResponseOutputMessage) ->
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request, _ = auth_dependency):
     return templates.TemplateResponse(
-        "index.html", 
+        "index.html",
         {
             "request": request,
         }
@@ -189,21 +246,22 @@ async def save_user_message_created_at(openai_client: AsyncOpenAI, conversation:
         cleanup_created_at_metadata(conversation.metadata)
 
         await openai_client.conversations.update(conversation.id, metadata=conversation.metadata)
-        
+
         logger.info(f"Successfully saved created_at for user message")
         return  # Success, exit the retry loop
 
     except Exception as e:
         logger.error(f"Error updating message created_at.")
-        
+
 
 
 async def get_result(
     agent: AgentVersionObject,
     conversation: Conversation,
-    user_message: str, 
+    user_message: str,
     project_client: AIProjectClient,
-    carrier: Dict[str, str]
+    carrier: Dict[str, str],
+    file_contents: Optional[List[Dict[str, str]]] = None,
 ) -> AsyncGenerator[str, None]:
     ctx = TraceContextTextMapPropagator().extract(carrier=carrier)
     with tracer.start_as_current_span('get_result', context=ctx):
@@ -211,19 +269,18 @@ async def get_result(
             logger.info(f"get_result invoked for conversation={conversation.id}")
             input_created_at = datetime.now(timezone.utc).timestamp()
 
-            # MCP tool konfiguráció
-            mcp_tools = [
-                {
-                    "type": "mcp",
-                    "server_label": "kb",
-                    "server_url": "https://gamesforbusiness-ai-search.search.windows.net/knowledgebases/knowledgebase-1774432482353/mcp",
-                    "require_approval": "never",
-                }
-            ]
+            # Build input: user message + optional file contents
+            input_parts = []
+            if file_contents:
+                for fc in file_contents:
+                    input_parts.append(f"[Uploaded file: {fc['name']}]\n{fc['content']}\n")
+            input_parts.append(user_message)
+            full_input = "\n".join(input_parts)
+
             try:
                 response = await openai_client.responses.create(
                     conversation=conversation.id,
-                    input=user_message,
+                    input=full_input,
                     extra_body={
                             "agent_reference": {
                                 "name": agent.name,
@@ -246,7 +303,7 @@ async def get_result(
                         yield serialize_sse_event(stream_data)
                     elif event.type == "response.completed":
                         logger.info(f"Response completed with full message: {event.response.output_text}")
-                                                        
+
             except Exception as e:
                 logger.exception(f"Exception in get_result: {e}")
                 error_data = {
@@ -258,7 +315,7 @@ async def get_result(
             finally:
                 stream_data = {'type': "stream_end"}
                 await save_user_message_created_at(openai_client, conversation, input_created_at)
-                yield serialize_sse_event(stream_data)           
+                yield serialize_sse_event(stream_data)
 
 
 
@@ -293,10 +350,10 @@ async def history(
 
                 logger.info(f"List message, conversation ID: {conversation_id}")
                 response = JSONResponse(content=content)
-            
+
                 # Update cookies to persist the conversation IDs.
-                response.set_cookie("conversation_id", conversation_id)
-                response.set_cookie("agent_id", agent_id)
+                response.set_cookie("conversation_id", conversation.id, httponly=True, samesite="strict")
+                response.set_cookie("agent_id", agent_id, httponly=True, samesite="strict")
                 return response
             except Exception as e:
                 logger.error(f"Error listing message: {e}")
@@ -319,15 +376,84 @@ async def chat(
     request: Request,
     project_client: AIProjectClient = Depends(get_project_client),
     agent: AgentVersionObject = Depends(get_agent_version_obj),
-    
+    conversation_mgr = Depends(get_conversation_manager),
 	_ = auth_dependency
 ):
+    user_id = get_user_id(request)
     # Retrieve the conversation ID from the cookies (if available).
     conversation_id = request.cookies.get('conversation_id')
-    agent_id = request.cookies.get('agent_id')    
+    agent_id = request.cookies.get('agent_id')
 
-    carrier = {}        
+    carrier = {}
     TraceContextTextMapPropagator().inject(carrier)
+
+    # Determine content type for file upload support
+    content_type = request.headers.get("content-type", "")
+    user_message_text = ""
+    file_contents: List[Dict[str, str]] = []
+    uploaded_file_names: List[str] = []
+
+    if "multipart/form-data" in content_type:
+        # Handle file upload via multipart form data
+        form = await request.form()
+        user_message_text = form.get("message", "")
+        files = form.getlist("files")
+        for uploaded_file in files:
+            if not isinstance(uploaded_file, UploadFile):
+                continue
+            # Validate file extension
+            filename = uploaded_file.filename or "unknown"
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in ALLOWED_EXTENSIONS:
+                continue  # Skip unsupported files
+            # Read file content (streaming, up to MAX_UPLOAD_SIZE)
+            file_data = await uploaded_file.read(MAX_UPLOAD_SIZE + 1)
+            if len(file_data) > MAX_UPLOAD_SIZE:
+                continue  # Skip files that exceed size limit
+            try:
+                text_content = file_data.decode("utf-8", errors="replace")
+            except Exception:
+                text_content = f"[Binary file: {filename}, size: {len(file_data)} bytes]"
+            file_contents.append({"name": filename, "content": text_content})
+            uploaded_file_names.append(filename)
+        # Store uploaded files to blob storage if available
+        storage_account = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
+        if storage_account and uploaded_file_names:
+            try:
+                from azure.storage.blob.aio import BlobServiceClient
+                from azure.identity.aio import DefaultAzureCredential as AsyncDefaultAzureCredential
+                async with AsyncDefaultAzureCredential() as cred:
+                    blob_service = BlobServiceClient(
+                        account_url=f"https://{storage_account}.blob.core.windows.net",
+                        credential=cred,
+                    )
+                    container_client = blob_service.get_container_client("user-uploads")
+                    for uploaded_file in files:
+                        if not isinstance(uploaded_file, UploadFile):
+                            continue
+                        filename = uploaded_file.filename or "unknown"
+                        ext = os.path.splitext(filename)[1].lower()
+                        if ext not in ALLOWED_EXTENSIONS:
+                            continue
+                        await uploaded_file.seek(0)
+                        blob_data = await uploaded_file.read()
+                        if len(blob_data) > MAX_UPLOAD_SIZE:
+                            continue
+                        blob_name = f"{user_id}/{conversation_id or 'new'}/{uuid.uuid4()}{ext}"
+                        blob_client = container_client.get_blob_client(blob_name)
+                        await blob_client.upload_blob(blob_data, overwrite=True)
+                        logger.info(f"Uploaded file to blob: {blob_name}")
+                    await blob_service.close()
+            except Exception as e:
+                logger.error(f"Error uploading to blob storage: {e}")
+    else:
+        # Standard JSON body
+        try:
+            body = await request.json()
+            user_message_text = body.get('message', '')
+        except Exception as e:
+            logger.error(f"Invalid JSON in request: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid JSON in request: {e}")
 
     with tracer.start_as_current_span("chat_request"):
         async with project_client.get_openai_client() as openai_client:
@@ -337,14 +463,6 @@ async def chat(
             )
             conversation_id = conversation.id
             agent_id = agent.id
-        
-    # Parse the JSON from the request.
-    try:
-        user_message = await request.json()
-    except Exception as e:
-        logger.error(f"Invalid JSON in request: {e}")
-        raise HTTPException(status_code=400, detail=f"Invalid JSON in request: {e}")
-    # Create a new message from the user's input.
 
     # Set the Server-Sent Events (SSE) response headers.
     headers = {
@@ -355,9 +473,114 @@ async def chat(
     logger.info(f"Starting streaming response for conversation ID {conversation_id}")
 
     # Create the streaming response using the generator.
-    response = StreamingResponse(get_result(agent, conversation, user_message.get('message', ''), project_client, carrier), headers=headers)
+    response = StreamingResponse(
+        get_result(agent, conversation, user_message_text, project_client, carrier, file_contents if file_contents else None),
+        headers=headers,
+    )
 
     # Update cookies to persist the conversation and agent IDs.
-    response.set_cookie("conversation_id", conversation_id)
-    response.set_cookie("agent_id", agent_id)
+    response.set_cookie("conversation_id", conversation_id, httponly=True, samesite="strict")
+    response.set_cookie("agent_id", agent_id, httponly=True, samesite="strict")
+
+    # Upsert conversation in Table Storage for chat history sidebar
+    if conversation_mgr:
+        try:
+            title = user_message_text[:50] if user_message_text else "New conversation"
+            preview = user_message_text[:200] if user_message_text else ""
+            if uploaded_file_names:
+                file_suffix = f" [{', '.join(uploaded_file_names)}]"
+                title = (title + file_suffix)[:100]
+            await conversation_mgr.upsert_conversation(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                agent_id=agent_id,
+                title=title,
+                preview=preview,
+            )
+        except Exception as e:
+            logger.error(f"Error upserting conversation to Table Storage: {e}")
+
     return response
+
+
+# --- Chat History Sidebar Endpoints ---
+
+@router.get("/conversations")
+async def list_conversations(
+    request: Request,
+    conversation_mgr = Depends(get_conversation_manager),
+    _ = auth_dependency,
+):
+    """List all conversations for the authenticated user."""
+    user_id = get_user_id(request)
+    if not conversation_mgr:
+        return JSONResponse(content=[])
+    try:
+        conversations = await conversation_mgr.list_conversations(user_id)
+        return JSONResponse(content=conversations)
+    except Exception as e:
+        logger.error(f"Error listing conversations: {e}")
+        return JSONResponse(content=[])
+
+
+@router.post("/conversations/{conversation_id}/load")
+async def load_conversation(
+    request: Request,
+    conversation_id: str,
+    agent: AgentVersionObject = Depends(get_agent_version_obj),
+    openai_client: AsyncOpenAI = Depends(get_openai_client),
+    conversation_mgr = Depends(get_conversation_manager),
+    _ = auth_dependency,
+):
+    """Load a specific conversation and set cookies for it."""
+    user_id = get_user_id(request)
+    # Verify the conversation belongs to the user
+    if conversation_mgr:
+        conv = await conversation_mgr.get_conversation(user_id, conversation_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        agent_id = conv.get("agentId", agent.id)
+    else:
+        agent_id = agent.id
+
+    # Return the messages from this conversation
+    async with openai_client:
+        try:
+            content = []
+            items = await openai_client.conversations.items.list(
+                conversation_id=conversation_id, order="desc", limit=16
+            )
+            conversation = await openai_client.conversations.retrieve(conversation_id=conversation_id)
+            async for item in items:
+                if item.type == "message":
+                    formatted_msg = await get_message_and_annotations(item)
+                    formatted_msg["role"] = item.role
+                    formatted_msg["created_at"] = conversation.metadata.get(
+                        get_created_at_label(item.id), ""
+                    ) if conversation.metadata else ""
+                    content.append(formatted_msg)
+
+            response = JSONResponse(content=content)
+            response.set_cookie("conversation_id", conversation_id, httponly=True, samesite="strict")
+            response.set_cookie("agent_id", agent_id, httponly=True, samesite="strict")
+            return response
+        except Exception as e:
+            logger.error(f"Error loading conversation: {e}")
+            raise HTTPException(status_code=500, detail=f"Error loading conversation: {e}")
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    request: Request,
+    conversation_id: str,
+    conversation_mgr = Depends(get_conversation_manager),
+    _ = auth_dependency,
+):
+    """Delete a conversation from chat history."""
+    user_id = get_user_id(request)
+    if not conversation_mgr:
+        raise HTTPException(status_code=500, detail="Conversation manager not available")
+    success = await conversation_mgr.delete_conversation(user_id, conversation_id)
+    if success:
+        return JSONResponse(content={"status": "deleted"})
+    raise HTTPException(status_code=404, detail="Conversation not found")

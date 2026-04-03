@@ -71,6 +71,12 @@ param targetPort int = 80
 @description('Specifies if the resource already exists')
 param exists bool = false
 
+@description('Entra ID client ID for Easy Auth. Leave empty to disable.')
+param entraAuthClientId string = ''
+
+@description('Entra ID tenant ID for Easy Auth.')
+param entraAuthTenantId string = ''
+
 resource existingApp 'Microsoft.App/containerApps@2023-05-02-preview' existing = if (exists) {
   name: name
 }
@@ -101,6 +107,8 @@ module app 'container-app.bicep' = {
     imageName: !empty(imageName) ? imageName : exists ? existingApp.properties.template.containers[0].image : ''
     targetPort: targetPort
     serviceBinds: serviceBinds
+    entraAuthClientId: entraAuthClientId
+    entraAuthTenantId: entraAuthTenantId
   }
 }
 

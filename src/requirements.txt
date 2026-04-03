@@ -14,3 +14,6 @@ urllib3==2.3.0
 setuptools==80.9.0
 starlette== 0.49.1
 jinja2 # new dependent of fastapi
+azure-data-tables  # Table Storage for chat history
+azure-storage-blob  # Blob storage for file uploads
+python-multipart  # File upload support for FastAPI

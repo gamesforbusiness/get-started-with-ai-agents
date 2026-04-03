@@ -1,0 +1,112 @@
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  min-width: 280px;
+  height: 100%;
+  background-color: var(--colorNeutralBackground2);
+  border-right: 1px solid var(--colorNeutralStroke2);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+  flex-shrink: 0;
+}
+
+.conversationList {
+  overflow-y: auto;
+  flex: 1;
+  padding: 8px;
+}
+
+.loadingContainer {
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+}
+
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 16px;
+  color: var(--colorNeutralForeground3);
+}
+
+.emptyIcon {
+  font-size: 32px;
+}
+
+.group {
+  margin-bottom: 8px;
+}
+
+.groupLabel {
+  display: block;
+  padding: 8px 12px 4px;
+  color: var(--colorNeutralForeground3);
+  font-weight: 600;
+}
+
+.conversationItem {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+
+.conversationItem:hover {
+  background-color: var(--colorNeutralBackground1Hover);
+}
+
+.activeItem {
+  background-color: var(--colorNeutralBackground1Selected);
+}
+
+.conversationContent {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.conversationTitle {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.conversationPreview {
+  font-size: 11px;
+  color: var(--colorNeutralForeground3);
+}
+
+.deleteButton {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.conversationItem:hover .deleteButton {
+  opacity: 1;
+}
+
+@media (width <= 768px) {
+  .sidebar {
+    position: absolute;
+    z-index: 100;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    box-shadow: 4px 0 12px rgba(0, 0, 0, 0.15);
+  }
+}

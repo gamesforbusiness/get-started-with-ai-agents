@@ -30,6 +30,9 @@ module storageAccount '../storage/storage-account.bicep' = {
       {
         name: 'default'
       }
+      {
+        name: 'user-uploads'
+      }
     ]
     files: [
       {
@@ -44,6 +47,9 @@ module storageAccount '../storage/storage-account.bicep' = {
     tables: [
       {
         name: 'default'
+      }
+      {
+        name: 'conversations'
       }
     ]
     deleteRetentionPolicy: {

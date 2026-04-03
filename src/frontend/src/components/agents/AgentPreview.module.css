@@ -3,11 +3,21 @@
 
   overflow: hidden;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
 
   width: 100%;
   max-width: 100%;
   height: 100vh;
+}
+
+.mainArea {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .topBar {
@@ -26,7 +36,7 @@
   overflow: hidden;
   display: flex;
   flex: 1;
-  gap: 16px;
+  gap: 8px;
   align-items: center;
 
   min-width: 0;
@@ -110,7 +120,12 @@
 .emptyChatContainer {
   display: flex;
   flex-direction: column;
+  gap: 16px;
   align-items: center;
+
+  padding: 24px;
+
+  text-align: center;
 }
 
 .wavesContainer {
@@ -160,64 +175,6 @@
 .menuButtonContainer {
   position: relative;
   display: inline-block;
-}
-
-.menuButton {
-  position: relative;
-}
-
-.menu {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  background-color: var(--colorNeutralBackground1);
-  border: 1px solid var(--colorNeutralStroke1);
-  border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  z-index: 1000;
-  min-width: 200px;
-  display: none;
-}
-
-.menuButtonContainer:hover .menu,
-.menuButton:focus-within .menu {
-  display: block;
-}
-
-.menuItem {
-  display: flex;
-  align-items: center;
-  padding: 8px 16px;
-  cursor: pointer;
-  gap: 8px;
-}
-
-.menuItem:hover {
-  background-color: var(--colorNeutralBackground2);
-}
-
-.externalLink {
-  text-decoration: none;
-  color: inherit;
-  display: flex;
-  align-items: center;
-  width: 100%;
-}
-
-.menuButtonContainer {
-  position: relative;
-  display: inline-block;
-}
-
-.emptyChatContainer {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  align-items: center;
-
-  padding: 24px;
-
-  text-align: center;
 }
 
 .menuButton {
