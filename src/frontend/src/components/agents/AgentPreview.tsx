@@ -91,30 +91,16 @@ const preprocessContent = (
   return processedContent;
 };
 
-const formatTimestampToLocalTime = (timestampStr: string): string => {
-  // Convert timestamp string to local timezone with specific format
-  let localTime = new Date().toLocaleString();
-  if (timestampStr) {
-    try {
-      // Parse timestamp (assuming it's a Unix timestamp in seconds as string, could be float)
-      const timestamp = parseFloat(timestampStr);
-      if (!isNaN(timestamp)) {
-        const date = new Date(timestamp * 1000); // Convert to milliseconds
-        localTime = date.toLocaleDateString('en-US', {
-          month: '2-digit',
-          day: '2-digit',
-          year: '2-digit'
-        }) + ', ' + date.toLocaleTimeString('en-US', {
-          hour: 'numeric',
-          minute: '2-digit',
-          hour12: true
-        });
-      }
-    } catch (e) {
-      console.error('Error parsing timestamp:', e);
-    }
-  }
-  return localTime;
+// Parses a Unix-seconds timestamp (string, possibly float) into an ISO string.
+// Returns undefined if the input is not a finite number — callers should treat
+// that as "no timestamp" rather than feeding a locale-formatted string back
+// into `new Date(...)`, which is not portable across browsers/locales.
+const parseCreatedAtToISO = (timestampStr: string): string | undefined => {
+  if (!timestampStr) return undefined;
+  const seconds = parseFloat(timestampStr);
+  if (!Number.isFinite(seconds)) return undefined;
+  const date = new Date(seconds * 1000);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 };
 
 export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
@@ -149,14 +135,14 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
         const reversedResponse = [...json_response].reverse();
 
         for (const entry of reversedResponse) {
-          const localTime = formatTimestampToLocalTime(entry.created_at);
+          const timeISO = parseCreatedAtToISO(entry.created_at);
 
           if (entry.role === "user") {
             historyMessages.push({
               id: crypto.randomUUID(),
               content: entry.content,
               role: "user",
-              more: { time: localTime },
+              more: { time: timeISO },
             });
           } else {
             historyMessages.push({
@@ -164,7 +150,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
               content: preprocessContent(entry.content, entry.annotations),
               role: "assistant", // Assuming 'assistant' role for non-user
               isAnswer: true, // Assuming this property for assistant messages
-              more: { time: localTime },
+              more: { time: timeISO },
             });
           }
         }
@@ -238,13 +224,13 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
         const reversedResponse = [...json_response].reverse();
 
         for (const entry of reversedResponse) {
-          const localTime = formatTimestampToLocalTime(entry.created_at);
+          const timeISO = parseCreatedAtToISO(entry.created_at);
           if (entry.role === "user") {
             historyMessages.push({
               id: crypto.randomUUID(),
               content: entry.content,
               role: "user",
-              more: { time: localTime },
+              more: { time: timeISO },
             });
           } else {
             historyMessages.push({
@@ -252,7 +238,7 @@ export function AgentPreview({ agentDetails }: IAgentPreviewProps): ReactNode {
               content: preprocessContent(entry.content, entry.annotations),
               role: "assistant",
               isAnswer: true,
-              more: { time: localTime },
+              more: { time: timeISO },
             });
           }
         }
