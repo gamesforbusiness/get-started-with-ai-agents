@@ -7,7 +7,9 @@ import { useCallback } from 'react';
 export const useFormatTimestamp = (): ((date: Date | undefined) => string) => {
   return useCallback(
     (date: Date | undefined): string => {
-      if (date === undefined) {
+      // Guard against Invalid Date — Intl.DateTimeFormat.format() throws
+      // `RangeError: date value is not finite` on a NaN-time Date.
+      if (!date || Number.isNaN(date.getTime())) {
         return '';
       }
 
